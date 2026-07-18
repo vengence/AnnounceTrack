@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "list": {
+    "sourceType": "network_json",
+    "requestMatcher": {
+      "method": "POST",
+      "origin": "https://sff.jd.com",
+      "path": "/api",
+      "stableQuery": {
+        "v": "1.0",
+        "appId": "ANVFWIKZWFE8M1GZ3QU5",
+        "api": "dsm.jdo.home.doc.article.tree.get"
+      },
+      "ignoreQueryKeys": []
+    },
+    "extraction": {
+      "collectionPath": "$.data.articles",
+      "idField": "id",
+      "titleField": "articleTitle",
+      "urlField": "",
+      "dateField": "modified",
+      "typeField": "articleChannelId"
+    }
+  },
+  "detail": {
+    "sourceType": "network_json",
+    "requestMatcher": {
+      "method": "POST",
+      "origin": "https://sff.jd.com",
+      "path": "/api",
+      "stableQuery": {
+        "v": "1.0",
+        "appId": "ANVFWIKZWFE8M1GZ3QU5",
+        "api": "dsm.jdo.home.doc.cms.article.get"
+      },
+      "ignoreQueryKeys": []
+    },
+    "extraction": {
+      "contentPath": "$.data.articleContent",
+      "titlePath": "$.data.articleTitle",
+      "idPath": "$.data.id",
+      "createdAtPath": "$.data.created",
+      "updatedAtPath": "$.data.modified",
+      "metadataPaths": []
+    }
+  },
+  "relation": {
+    "detailUrlTemplate": "https://open.jd.com/v2/#/announcement/detail?listId={articleChannelId}&itemId={id}"
+  }
+}

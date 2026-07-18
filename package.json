@@ -1,0 +1,78 @@
+{
+  "name": "announcement-monitor-app",
+  "version": "0.7.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "description": "本机运行的通用公告与页面监控、历史版本与通知工具",
+  "author": "vengence",
+  "license": "MIT",
+  "homepage": "https://github.com/vengence/AnnounceTrack",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vengence/AnnounceTrack.git"
+  },
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs",
+    "pack": "node scripts/build-release.cjs dir",
+    "dist": "node scripts/build-release.cjs dmg",
+    "dist:win": "node scripts/build-release.cjs win",
+    "dist:win:portable": "node scripts/build-release.cjs win-portable"
+  },
+  "devDependencies": {
+    "electron": "43.1.1",
+    "electron-builder": "26.15.3"
+  },
+  "dependencies": {
+    "nodemailer": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.local.announcementprobe",
+    "productName": "监控助手",
+    "asar": true,
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "lib/**/*",
+      "src/**/*",
+      "assets/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "assets/monitor-icon.png",
+      "identity": null,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ]
+    },
+    "win": {
+      "icon": "assets/monitor-icon.png",
+      "artifactName": "AnnounceTrack-${version}-windows-${arch}-portable.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "监控助手",
+      "artifactName": "监控助手-${version}-windows-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "监控助手 ${version}",
+      "artifactName": "监控助手-${version}-${arch}.${ext}"
+    }
+  }
+}

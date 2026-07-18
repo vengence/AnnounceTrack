@@ -1,0 +1,10 @@
+.DS_Store
+node_modules/
+.tools/
+dist/
+release/
+*.log
+*.tmp
+monitor-data.json
+settings.json
+coverage/
