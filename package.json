@@ -1,6 +1,6 @@
 {
   "name": "announcement-monitor-app",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "packageManager": "pnpm@11.9.0",
   "description": "本机运行的通用公告与页面监控、历史版本与通知工具",

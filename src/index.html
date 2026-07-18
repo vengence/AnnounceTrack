@@ -18,7 +18,6 @@
           <button class="nav-item active" data-view-target="dashboard" type="button">
             <span class="nav-icon">⌂</span><span>概览</span>
           </button>
-          <button class="nav-item" data-view-target="logs" type="button"><span class="nav-icon">≡</span><span>日志</span></button>
         </nav>
 
         <div class="sidebar-section">
@@ -39,9 +38,11 @@
         </div>
 
         <div class="sidebar-footer">
+          <button id="sidebar-queue-button" class="nav-item" type="button"><span class="nav-icon">⇥</span><span>任务队列</span><small id="sidebar-queue-count">0</small></button>
+          <button class="nav-item" data-view-target="logs" type="button"><span class="nav-icon">≡</span><span>日志</span></button>
           <button class="nav-item" data-view-target="settings" type="button"><span class="nav-icon">⚙</span><span>设置</span></button>
           <div class="scheduler-state"><span class="health-dot"></span><div><strong id="sidebar-health">后台监控正常</strong><small id="sidebar-queue">当前没有等待任务</small></div></div>
-          <div id="app-version" class="app-version">版本 —</div>
+          <button id="app-version" class="app-version" type="button" title="打开 GitHub 仓库">版本 — · GitHub ↗</button>
         </div>
       </aside>
 
@@ -55,7 +56,7 @@
           <div class="stats-grid">
             <article class="stat-card"><span>运行中的任务</span><strong id="stat-active">0</strong><small>串行节能执行</small></article>
             <article class="stat-card"><span>今日发现变化</span><strong id="stat-events">0</strong><small>新增与内容更新</small></article>
-            <article class="stat-card"><span>需要处理</span><strong id="stat-errors">0</strong><small>采集或通知异常</small></article>
+            <article id="error-stat-card" class="stat-card actionable" tabindex="0"><span>需要处理</span><strong id="stat-errors">0</strong><small>点击查看采集或通知异常</small></article>
             <article class="stat-card"><span>已保存公告</span><strong id="stat-announcements">0</strong><small>可查看历史版本</small></article>
           </div>
 
@@ -88,6 +89,8 @@
                     <label class="field"><span>任务名称</span><input id="task-name" type="text" placeholder="例如：京东开放平台公告" required /></label>
                     <label class="field"><span>检查频率</span><select id="task-frequency"><option value="15">每15分钟</option><option value="30">每30分钟</option><option value="60">每小时</option><option value="360">每6小时</option><option value="1440">每天一次</option></select></label>
                   </div>
+                  <div class="two-columns"><label class="field"><span>任务分组（可选）</span><input id="task-group" type="text" placeholder="例如：电商平台 / 重点页面" /></label><label id="daily-time-field" class="field hidden"><span>每天检查时间</span><input id="task-daily-time" type="time" value="09:00" /></label></div>
+                  <label id="max-items-field" class="field"><span>每次只检查最新 N 条公告</span><input id="task-max-items" type="number" min="0" max="100" value="20" /><small>设为 0 表示检查当前提取到的全部公告，最多 100 条。</small></label>
                   <div class="quiet-hours-box">
                     <label class="field quiet-mode-field"><span>暂停抓取时段</span><select id="quiet-hours-mode"><option value="global">使用全局设置</option><option value="custom">单独设置</option><option value="disabled">此任务不暂停</option></select></label>
                     <div id="quiet-hours-global-note" class="quiet-hours-note">当前使用全局暂停抓取设置。</div>
@@ -127,6 +130,7 @@
                   <article id="list-validation-card" class="output-card"><div class="output-header"><span>公告列表</span><strong id="list-result-count">0 条</strong></div><div class="table-wrap"><table><thead><tr><th>标题</th><th>日期</th><th>ID</th></tr></thead><tbody id="list-result-body"></tbody></table></div></article>
                   <article id="detail-validation-card" class="output-card"><div class="output-header"><span>公告正文</span><strong id="detail-result-title">已提取</strong></div><div id="detail-result-metadata" class="detail-metadata hidden"></div><div id="detail-result-content" class="detail-content"></div></article>
                 </div>
+                <div class="exclusion-box"><label class="field"><span>排除固定内容（可选）</span><textarea id="content-exclusions" rows="4" placeholder="复制不希望参与对比的页脚、版权或导航文字；多段内容用空行分隔。"></textarea></label><button id="apply-exclusions" class="button secondary" type="button">应用排除并重新验证</button></div>
               </section>
 
               <section id="notification-section" class="surface form-section hidden">
@@ -161,7 +165,7 @@
                   <li data-step="discover"><span>3</span><div><strong>匹配候选数据</strong><small>等待开始</small></div></li>
                   <li data-step="ai"><span>4</span><div><strong>生成获取方案</strong><small>等待开始</small></div></li>
                 </ol>
-                <div class="status-card" id="status-card"><span class="health-dot"></span><p id="status-text">填写样例后开始分析。</p></div>
+                <div class="status-card" id="status-card"><span class="health-dot"></span><p id="status-text">填写样例后开始分析。</p><button id="copy-diagnostic-logs" class="text-button hidden" type="button">复制完整诊断日志</button></div>
               </section>
               <details class="surface runtime-log" open><summary><span>运行日志</span><span id="log-count">0 条</span></summary><div class="log-toolbar"><button id="copy-logs" type="button">复制</button><button id="clear-logs" type="button">清空</button></div><ol id="runtime-log-list"></ol></details>
             </aside>
@@ -171,7 +175,7 @@
         <section id="view-task" class="view">
           <header class="page-header task-page-header">
             <div><button class="back-button" data-view-target="dashboard" type="button">← 返回概览</button><p class="eyebrow">公告监控</p><h1 id="task-detail-name">任务</h1><p id="task-detail-subtitle">—</p></div>
-            <div class="button-row"><button id="task-login" class="button secondary hidden" type="button">登录账号</button><button id="task-toggle" class="button secondary" type="button">暂停</button><button id="task-run-now" class="button primary" type="button">立即检查</button></div>
+            <div class="button-row"><button id="task-login" class="button secondary hidden" type="button">登录账号</button><button id="task-reconfigure" class="button secondary" type="button">修改获取方案</button><button id="task-toggle" class="button secondary" type="button">暂停</button><button id="task-run-now" class="button primary" type="button">立即检查</button></div>
           </header>
           <div id="task-health-banner" class="health-banner"></div>
           <div class="stats-grid task-stats"><article class="stat-card"><span>列表公告</span><strong id="task-stat-list">0</strong></article><article class="stat-card"><span>历史变化</span><strong id="task-stat-events">0</strong></article><article class="stat-card"><span>上次成功</span><strong id="task-stat-success" class="stat-time">—</strong></article><article class="stat-card"><span>下次检查</span><strong id="task-stat-next" class="stat-time">—</strong></article></div>
@@ -186,6 +190,9 @@
           <header class="page-header compact-header"><div><p class="eyebrow">应用</p><h1>设置</h1><p>凭证使用系统安全能力加密，仅保存在这台电脑。</p></div></header>
           <div class="settings-grid">
             <section class="surface form-section"><h2>DeepSeek</h2><p class="section-help">统一用于方案分析和公告总结。配置分析最多 60,000 字符；摘要或更新分析最多 40,000 字符。</p><label class="field"><span>API Key</span><input id="settings-api-key" type="password" placeholder="留空表示不修改" /></label><div class="two-columns"><label class="field"><span>模型</span><select id="settings-model"><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label><label class="field"><span>思考模式</span><select id="settings-thinking"><option value="disabled">关闭（更快、更省）</option><option value="high">开启 · High</option><option value="max">开启 · Max</option></select></label></div><label class="inline-check"><input id="settings-remember-key" type="checkbox" checked /><span>使用系统加密能力保存在本机</span></label></section>
+            <section class="surface form-section"><h2>DeepSeek 消耗</h2><div id="deepseek-usage" class="storage-summary">尚无调用记录</div><p class="section-help">统计本机累计方案分析、摘要和对比所消耗的 tokens。</p></section>
+            <section class="surface form-section settings-wide"><h2>摘要与对比提示词</h2><p class="section-help">留空会恢复应用默认版本。网页正文会作为不可信数据附加在提示词后。</p><label class="field"><span>新公告摘要提示词</span><textarea id="settings-summary-prompt" rows="4"></textarea></label><label class="field"><span>内容对比提示词</span><textarea id="settings-comparison-prompt" rows="4"></textarea></label></section>
+            <section class="surface form-section"><h2>本地存储占用</h2><div id="storage-usage" class="storage-summary">正在计算…</div><p class="section-help">包含任务历史、设置、浏览器登录会话、缓存和日志等文件。</p></section>
             <section class="surface form-section"><h2>后台运行</h2><label class="setting-row"><span><strong>登录后自动启动</strong><small>启动后按任务计划在后台检查</small></span><input id="settings-launch-at-login" type="checkbox" /></label><label class="setting-row"><span><strong>关闭窗口后继续运行</strong><small>可从菜单栏重新打开应用</small></span><input id="settings-keep-running" type="checkbox" checked /></label><div class="global-quiet-setting"><label class="setting-row"><span><strong>默认暂停抓取时段</strong><small>新任务默认继承，任务内可单独覆盖</small></span><input id="settings-quiet-hours-enabled" type="checkbox" /></label><div id="settings-quiet-hours-fields" class="quiet-hours-fields settings-quiet-hours-fields hidden"><label class="field"><span>从</span><input id="settings-quiet-hours-start" type="time" value="00:00" /></label><label class="field"><span>到</span><input id="settings-quiet-hours-end" type="time" value="08:00" /></label></div></div></section>
             <section class="surface form-section settings-wide"><div class="surface-header-inline notification-settings-header"><div><h2>通知配置</h2><p class="section-help">通知凭证统一加密保存在本机，创建任务时直接选择。</p></div><div class="button-row"><button id="add-wechat-profile" class="button secondary small" type="button">＋ 企业微信</button><button id="add-email-profile" class="button secondary small" type="button">＋ 邮件</button></div></div><div id="notification-profile-list" class="profile-list"></div></section>
             <section class="surface form-section settings-wide exception-settings">
@@ -223,6 +230,8 @@
       <div class="dialog-header"><div><p class="eyebrow">公告监控</p><h2>编辑任务设置</h2><p>修改后从下一次检查开始生效，不需要重新分析页面。</p></div><button id="task-edit-close" class="icon-button" type="button">×</button></div>
       <div class="task-edit-body">
         <div class="two-columns"><label class="field"><span>任务名称</span><input id="edit-task-name" /></label><label class="field"><span>检查频率</span><select id="edit-task-frequency"><option value="15">每15分钟</option><option value="30">每30分钟</option><option value="60">每小时</option><option value="360">每6小时</option><option value="1440">每天一次</option></select></label></div>
+        <div class="two-columns"><label class="field"><span>任务分组</span><input id="edit-task-group" /></label><label id="edit-daily-time-field" class="field hidden"><span>每天检查时间</span><input id="edit-task-daily-time" type="time" value="09:00" /></label></div>
+        <label id="edit-max-items-field" class="field"><span>每次只检查最新 N 条公告</span><input id="edit-task-max-items" type="number" min="0" max="100" value="20" /></label>
         <div class="quiet-hours-box edit-quiet-hours"><label class="field quiet-mode-field"><span>暂停抓取时段</span><select id="edit-quiet-hours-mode"><option value="global">使用全局设置</option><option value="custom">单独设置</option><option value="disabled">此任务不暂停</option></select></label><div id="edit-quiet-hours-global-note" class="quiet-hours-note">当前使用全局暂停抓取设置。</div><div id="edit-quiet-hours-fields" class="quiet-hours-fields hidden"><label class="field"><span>从</span><input id="edit-quiet-hours-start" type="time" value="00:00" /></label><label class="field"><span>到</span><input id="edit-quiet-hours-end" type="time" value="08:00" /></label><small>手动检查不受此时段限制。</small></div></div>
         <div class="notification-grid">
           <article class="channel-card">
@@ -239,6 +248,9 @@
       </div>
       <div class="task-edit-footer"><button id="task-edit-cancel" class="button secondary" type="button">取消</button><button id="task-edit-save" class="button primary" type="button">保存设置</button></div>
     </dialog>
+
+    <dialog id="queue-dialog" class="announcement-dialog compact-dialog"><div class="dialog-header"><div><p class="eyebrow">后台调度</p><h2>当前任务队列</h2><p>采集任务串行执行，避免同时打开多个隐藏页面。</p></div><button id="queue-dialog-close" class="icon-button" type="button">×</button></div><div id="queue-dialog-content" class="dialog-list"></div></dialog>
+    <dialog id="error-dialog" class="announcement-dialog compact-dialog"><div class="dialog-header"><div><p class="eyebrow">需要处理</p><h2>异常详情</h2><p>点击任务可进入详情页查看最近错误和运行记录。</p></div><button id="error-dialog-close" class="icon-button" type="button">×</button></div><div id="error-dialog-content" class="dialog-list"></div></dialog>
 
     <dialog id="notification-preview-dialog" class="announcement-dialog preview-dialog">
       <div class="dialog-header"><div><p class="eyebrow">通知预览</p><h2 id="preview-title">通知效果</h2><p>这是本机生成的示例，不会发送任何消息。</p></div><button id="preview-close" class="icon-button" type="button">×</button></div>

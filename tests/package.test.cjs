@@ -13,7 +13,7 @@ test("邮件发送运行依赖已声明并可加载", () => {
 
 test("Windows 11 安装目标使用 x64 NSIS 并提供安装选项", () => {
   const packageJson = require("../package.json");
-  assert.equal(packageJson.version, "0.7.0");
+  assert.equal(packageJson.version, "0.7.1");
   assert.deepEqual(packageJson.build?.win?.target, [{ target: "nsis", arch: ["x64"] }]);
   assert.equal(packageJson.build?.nsis?.oneClick, false);
   assert.equal(packageJson.build?.nsis?.allowToChangeInstallationDirectory, true);

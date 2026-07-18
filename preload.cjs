@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("announcementProbe", {
   capturePage: (options) => ipcRenderer.invoke("capture-page", options),
   analyzeWithDeepSeek: (options) => ipcRenderer.invoke("deepseek-analyze", options),
   loadSettings: () => ipcRenderer.invoke("load-settings"),
+  getStorageUsage: () => ipcRenderer.invoke("storage-usage"),
   saveSettings: (options) => ipcRenderer.invoke("save-settings", options),
   saveNotificationProfile: (options) => ipcRenderer.invoke("notification-profile-save", options),
   deleteNotificationProfile: (profileId) => ipcRenderer.invoke("notification-profile-delete", profileId),

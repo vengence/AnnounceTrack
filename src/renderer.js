@@ -15,7 +15,8 @@ const state = {
   selectedTaskId: "",
   announcementHistory: null,
   settings: null,
-  authSessionKey: ""
+  authSessionKey: "",
+  editingPlanTaskId: ""
 };
 
 const elements = {
@@ -37,13 +38,16 @@ initialize();
 
 async function initialize() {
   window.announcementProbe.getAppVersion().then((version) => {
-    document.querySelector("#app-version").textContent = `版本 ${version}`;
+    document.querySelector("#app-version").textContent = `版本 ${version} · GitHub ↗`;
   }).catch(() => {});
+  document.querySelector("#app-version").addEventListener("click", () => window.announcementProbe.openExternal("https://github.com/vengence/AnnounceTrack"));
   elements.form.addEventListener("submit", handleAnalyze);
   elements.validateButton.addEventListener("click", handleValidate);
   elements.copyPlan.addEventListener("click", copyPlanJson);
   document.querySelector("#copy-logs").addEventListener("click", copyRuntimeLogs);
   document.querySelector("#clear-logs").addEventListener("click", clearRuntimeLog);
+  document.querySelector("#copy-diagnostic-logs").addEventListener("click", copyDiagnosticLogs);
+  document.querySelector("#apply-exclusions").addEventListener("click", applyExclusionsAndValidate);
   document.querySelector("#copy-global-logs").addEventListener("click", copyGlobalLogs);
   document.querySelector("#clear-global-logs").addEventListener("click", clearGlobalLogs);
   window.announcementProbe.onLog((entry) => appendLog(entry));
@@ -65,6 +69,8 @@ async function initialize() {
   document.querySelectorAll('input[name="monitor-mode"]').forEach((input) => input.addEventListener("change", updateMonitorModeUi));
   document.querySelector("#login-enabled").addEventListener("change", updateLoginUi);
   document.querySelector("#quiet-hours-mode").addEventListener("change", updateQuietHoursUi);
+  document.querySelector("#task-frequency").addEventListener("change", updateDailyTimeUi);
+  document.querySelector("#edit-task-frequency").addEventListener("change", updateEditDailyTimeUi);
   document.querySelector("#edit-quiet-hours-mode").addEventListener("change", updateEditQuietHoursUi);
   document.querySelector("#settings-quiet-hours-enabled").addEventListener("change", updateSettingsQuietHoursUi);
   document.querySelector("#open-login-window").addEventListener("click", loginForConfiguration);
@@ -77,6 +83,7 @@ async function initialize() {
   document.querySelector("#task-login").addEventListener("click", loginSelectedTask);
   document.querySelector("#task-toggle").addEventListener("click", toggleSelectedTask);
   document.querySelector("#task-edit").addEventListener("click", openTaskEditor);
+  document.querySelector("#task-reconfigure").addEventListener("click", reconfigureSelectedTask);
   document.querySelector("#task-delete").addEventListener("click", deleteSelectedTask);
   document.querySelector("#save-settings-button").addEventListener("click", saveApplicationSettings);
   document.querySelector("#add-wechat-profile").addEventListener("click", () => openNotificationProfileEditor("wechat"));
@@ -96,6 +103,11 @@ async function initialize() {
   document.querySelector("#task-edit-close").addEventListener("click", closeTaskEditor);
   document.querySelector("#task-edit-cancel").addEventListener("click", closeTaskEditor);
   document.querySelector("#task-edit-save").addEventListener("click", saveTaskEdits);
+  document.querySelector("#sidebar-queue-button").addEventListener("click", openQueueDialog);
+  document.querySelector("#queue-dialog-close").addEventListener("click", () => document.querySelector("#queue-dialog").close());
+  document.querySelector("#error-stat-card").addEventListener("click", openErrorDialog);
+  document.querySelector("#error-stat-card").addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) openErrorDialog(); });
+  document.querySelector("#error-dialog-close").addEventListener("click", () => document.querySelector("#error-dialog").close());
 
   const [settings, monitor] = await Promise.all([
     window.announcementProbe.loadSettings().catch(() => null),
@@ -104,6 +116,7 @@ async function initialize() {
   state.settings = settings;
   state.monitor = monitor || state.monitor;
   populateSettings(settings || {});
+  window.announcementProbe.getStorageUsage().then(renderStorageUsage).catch(() => { document.querySelector("#storage-usage").textContent = "暂时无法计算"; });
   renderMonitorShell();
   showView("dashboard");
 }
@@ -140,9 +153,12 @@ async function handleAnalyze(event) {
       setStep("capture-detail", "active", "正在打开并采集初始请求");
       const samePageDetail = inputs.detailUrl === inputs.listUrl;
       setStatus(samePageDetail ? "正在检查列表页中是否嵌入了公告详情。" : "列表页已完成，正在采集样例公告详情页。", "working");
-      state.detailCapture = samePageDetail ? state.listCapture : await capturePage(inputs.detailUrl, inputs.authSessionKey);
+      const interactiveSample = (state.listCapture.dom?.blocks || []).find((item) => item.interactive && item.title && normalizeText(inputs.detailSample).includes(normalizeText(item.title)) && !/^https?:/i.test(item.href || ""));
+      state.detailCapture = interactiveSample
+        ? await capturePage(inputs.listUrl, inputs.authSessionKey, interactiveSample)
+        : samePageDetail ? state.listCapture : await capturePage(inputs.detailUrl, inputs.authSessionKey);
       appendLog({ scope: "详情页", message: `采集完成：${state.detailCapture.responses.length} 个响应，DOM 文本 ${state.detailCapture.dom.text.length} 字符`, level: "success" });
-      setStep("capture-detail", "done", samePageDetail ? "复用列表页中的嵌入详情" : `${state.detailCapture.responses.length} 个可读响应`);
+      setStep("capture-detail", "done", interactiveSample ? "已点击样例列表项并采集正文" : samePageDetail ? "复用列表页中的嵌入详情" : `${state.detailCapture.responses.length} 个可读响应`);
     } else {
       state.detailCapture = null;
       setStep("capture-detail", "done", "仅列表模式，已跳过");
@@ -189,6 +205,7 @@ async function handleAnalyze(event) {
     state.plan = state.createTaskType === "page"
       ? normalizePagePlan(rawPlan, state.detailCandidates)
       : normalizePlan(rawPlan, state.listCandidates, state.detailCandidates, inputs.monitorMode);
+    if (state.plan.confidence < 0.08) throw new Error("生成方案的置信度过低，未保存不可执行的方案；可复制完整诊断日志交给 Codex 分析。");
     // Candidates retain only compact previews; the raw capture bodies are no
     // longer needed after a plan is normalized and can be released promptly.
     state.listCapture = null;
@@ -224,7 +241,7 @@ async function handleValidate() {
     const freshListCapture = await capturePage(state.inputs.listUrl, state.inputs.authSessionKey);
     if (state.createTaskType === "page") {
       refineMatcherFromFreshCapture(state.plan.page, freshListCapture);
-      const detail = extractDetailByPlan(state.plan.page, freshListCapture, state.inputs.listSample);
+      const detail = applyDetailExclusions(extractDetailByPlan(state.plan.page, freshListCapture, state.inputs.listSample), state.plan.page.exclusions);
       if (!detail.content || normalizeText(detail.content).length < 20) throw new Error("页面监控方案未能提取出有效内容");
       const detailMatch = sampleMatchRatio(state.inputs.listSample, detailAsText(detail));
       const passed = detailMatch >= 0.2;
@@ -245,12 +262,13 @@ async function handleValidate() {
 
     let detail = null;
     if (state.inputs.monitorMode === "list_and_detail") {
-      const freshDetailCapture = state.inputs.detailUrl === state.inputs.listUrl
-        ? freshListCapture
-        : await capturePage(state.inputs.detailUrl, state.inputs.authSessionKey);
-      refineMatcherFromFreshCapture(state.plan.detail, freshDetailCapture);
       const validationItem = findSampleListItem(listItems, state.inputs.detailUrl, state.inputs.detailSample);
-      detail = extractDetailByPlan(state.plan.detail, freshDetailCapture, state.inputs.detailSample, validationItem);
+      const clickInteraction = state.plan.relation?.detailInteraction === "click_item";
+      const freshDetailCapture = clickInteraction
+        ? await capturePage(state.inputs.listUrl, state.inputs.authSessionKey, validationItem)
+        : state.inputs.detailUrl === state.inputs.listUrl ? freshListCapture : await capturePage(state.inputs.detailUrl, state.inputs.authSessionKey);
+      refineMatcherFromFreshCapture(state.plan.detail, freshDetailCapture);
+      detail = applyDetailExclusions(extractDetailByPlan(state.plan.detail, freshDetailCapture, state.inputs.detailSample, validationItem), state.plan.detail.exclusions);
       if (!detail.content || normalizeText(detail.content).length < 20) throw new Error("详情方案未能提取出有效正文");
     }
 
@@ -329,8 +347,8 @@ function readInputs() {
   return { monitorMode, listUrl, listSample, detailUrl, detailSample, loginEnabled, authSessionKey: loginEnabled ? state.authSessionKey : "" };
 }
 
-async function capturePage(url, sessionKey = "") {
-  return window.announcementProbe.capturePage({ url, settleMs: 4500, sessionKey });
+async function capturePage(url, sessionKey = "", detailItem = null) {
+  return window.announcementProbe.capturePage({ url, settleMs: 4500, sessionKey, detailItem });
 }
 
 function updateMonitorModeUi() {
@@ -416,9 +434,14 @@ function showView(name) {
 }
 
 function openCreateTask(type = "announcement") {
+  state.editingPlanTaskId = "";
   state.createTaskType = type === "page" ? "page" : "announcement";
   elements.form.reset();
   document.querySelector("#task-frequency").value = "15";
+  document.querySelector("#task-daily-time").value = "09:00";
+  document.querySelector("#task-max-items").value = "20";
+  document.querySelector("#task-group").value = "";
+  document.querySelector("#content-exclusions").value = "";
   document.querySelector('input[name="monitor-mode"][value="list_and_detail"]').checked = true;
   document.querySelector("#login-enabled").checked = false;
   document.querySelector("#quiet-hours-mode").value = "global";
@@ -446,7 +469,55 @@ function openCreateTask(type = "announcement") {
   updateCreateTaskTypeUi();
   updateLoginUi();
   updateQuietHoursUi();
+  updateDailyTimeUi();
   showView("create");
+}
+
+function reconfigureSelectedTask() {
+  const task = selectedTask();
+  if (!task) return;
+  openCreateTask(task.type || "announcement");
+  state.editingPlanTaskId = task.id;
+  document.querySelector("#create-title").textContent = "修改获取方案";
+  document.querySelector("#create-description").textContent = "重新提供样例并验证。保存后下一次检查会静默重建基线，不触发变化告警。";
+  document.querySelector("#task-name").value = task.name || "";
+  document.querySelector("#task-group").value = task.group || "";
+  document.querySelector("#task-frequency").value = String(task.frequencyMinutes || 15);
+  document.querySelector("#task-daily-time").value = task.dailyTime || "09:00";
+  document.querySelector("#task-max-items").value = String(task.maxItems ?? 20);
+  document.querySelector("#list-url").value = task.listUrl || "";
+  document.querySelector("#list-sample").value = task.sourceSamples?.list || "";
+  document.querySelector("#detail-url").value = task.sampleDetailUrl || "";
+  document.querySelector("#detail-sample").value = task.sourceSamples?.detail || "";
+  document.querySelector("#content-exclusions").value = (task.plan?.page?.exclusions || task.plan?.detail?.exclusions || []).join("\n\n");
+  if (task.monitorMode === "list_only") document.querySelector('input[name="monitor-mode"][value="list_only"]').checked = true;
+  document.querySelector("#login-enabled").checked = Boolean(task.authentication?.enabled);
+  state.authSessionKey = task.authentication?.sessionKey || "";
+  document.querySelector("#quiet-hours-mode").value = task.quietHours?.mode || "global";
+  document.querySelector("#quiet-hours-start").value = task.quietHours?.start || "00:00";
+  document.querySelector("#quiet-hours-end").value = task.quietHours?.end || "08:00";
+  document.querySelector("#wechat-profile").value = task.notifications?.wechat?.profileId || "";
+  document.querySelector("#email-profile").value = task.notifications?.email?.profileId || "";
+  updateMonitorModeUi();
+  updateDailyTimeUi();
+  updateQuietHoursUi();
+  updateLoginUi();
+}
+
+function updateDailyTimeUi() {
+  document.querySelector("#daily-time-field").classList.toggle("hidden", document.querySelector("#task-frequency").value !== "1440");
+}
+
+function updateEditDailyTimeUi() {
+  document.querySelector("#edit-daily-time-field").classList.toggle("hidden", document.querySelector("#edit-task-frequency").value !== "1440");
+}
+
+function applyExclusionsAndValidate() {
+  if (!state.plan) return showToast("请先生成获取方案。", true);
+  const exclusions = document.querySelector("#content-exclusions").value.split(/\n{2,}/).map((value) => value.trim()).filter(Boolean);
+  const target = state.createTaskType === "page" ? state.plan.page : state.plan.detail;
+  if (target) target.exclusions = exclusions;
+  handleValidate();
 }
 
 function clearValidationOutput() {
@@ -471,6 +542,7 @@ function updateCreateTaskTypeUi() {
     : "提供页面中正确的列表和详情样例，其余交给本机采集器与 DeepSeek。";
   document.querySelector("#announcement-mode-grid").classList.toggle("hidden", pageMode);
   document.querySelector("#detail-sample-fields").classList.toggle("hidden", pageMode || document.querySelector('input[name="monitor-mode"]:checked')?.value === "list_only");
+  document.querySelector("#max-items-field").classList.toggle("hidden", pageMode);
   document.querySelector("#source-url-label").textContent = pageMode ? "要监控的页面网址" : "公告列表页网址";
   document.querySelector("#source-sample-label").textContent = pageMode ? "从页面复制的目标区域内容" : "从页面复制的公告列表内容";
   document.querySelector("#list-sample").placeholder = pageMode ? "复制希望监控的完整区域，建议包含标题和有代表性的正文。" : "建议包含至少两条公告标题和日期。";
@@ -505,7 +577,9 @@ function renderMonitorShell() {
   document.querySelector("#sidebar-task-count").textContent = tasks.filter((task) => task.type !== "page").length;
   document.querySelector("#sidebar-page-task-count").textContent = tasks.filter((task) => task.type === "page").length;
   document.querySelector("#sidebar-health").textContent = errors ? `${errors} 项需要处理` : "后台监控正常";
-  document.querySelector("#sidebar-queue").textContent = scheduler.queueLength ? `${scheduler.queueLength} 个任务等待执行` : "当前没有等待任务";
+  const queueTotal = (scheduler.queueLength || 0) + (scheduler.activeTaskId ? 1 : 0);
+  document.querySelector("#sidebar-queue").textContent = scheduler.activeTaskId ? `1 个正在执行，${scheduler.queueLength || 0} 个等待` : scheduler.queueLength ? `${scheduler.queueLength} 个任务等待执行` : "当前没有等待任务";
+  document.querySelector("#sidebar-queue-count").textContent = String(queueTotal);
 
   const sidebar = document.querySelector("#sidebar-task-list");
   sidebar.textContent = "";
@@ -523,7 +597,21 @@ function renderMonitorShell() {
 
   const taskList = document.querySelector("#dashboard-task-list");
   taskList.textContent = "";
+  taskList.classList.add("task-groups");
+  const groups = new Map();
   tasks.forEach((task) => {
+    const key = task.group || (task.type === "page" ? "页面监控" : "公告监控");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(task);
+  });
+  groups.forEach((groupTasks, groupName) => {
+    const group = document.createElement("details");
+    group.className = "task-group";
+    group.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = `${groupName} · ${groupTasks.length}`;
+    group.append(summary);
+    groupTasks.forEach((task) => {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "task-row";
@@ -533,7 +621,9 @@ function renderMonitorShell() {
       <div class="task-cell">${escapeHtml(relativeTime(task.lastSuccessAt))}<small>下次 ${escapeHtml(relativeTime(task.nextRunAt))}</small></div>
       <span class="task-arrow">›</span>`;
     row.addEventListener("click", () => openTask(task.id));
-    taskList.append(row);
+      group.append(row);
+    });
+    taskList.append(group);
   });
   document.querySelector("#dashboard-empty").classList.toggle("hidden", tasks.length > 0);
 
@@ -555,6 +645,32 @@ function openTask(taskId) {
   state.selectedTaskId = taskId;
   renderSelectedTask();
   showView("task");
+}
+
+function openQueueDialog() {
+  const scheduler = state.monitor.scheduler || {};
+  const entries = [];
+  if (scheduler.activeTaskId) entries.push({ ...state.monitor.tasks.find((task) => task.id === scheduler.activeTaskId), stateLabel: "正在执行" });
+  (scheduler.queue || []).forEach((job, index) => entries.push({ ...state.monitor.tasks.find((task) => task.id === job.taskId), stateLabel: `等待中 · 第 ${index + 1} 位`, queuedAt: job.queuedAt }));
+  const container = document.querySelector("#queue-dialog-content");
+  container.innerHTML = entries.length ? entries.map((entry) => `<div class="queue-entry"><strong>${escapeHtml(entry.name || "未知任务")}</strong><small>${escapeHtml(entry.stateLabel)}${entry.queuedAt ? ` · 加入于 ${escapeHtml(formatDateTime(entry.queuedAt))}` : ""}</small></div>`).join("") : '<div class="empty-compact">当前没有正在执行或等待的任务</div>';
+  document.querySelector("#queue-dialog").showModal();
+}
+
+function openErrorDialog() {
+  const failedTaskIds = new Set(state.monitor.deliveries.filter((item) => item.status === "failed" && Date.now() - Date.parse(item.createdAt) < 24 * 60 * 60 * 1000).map((item) => item.taskId));
+  const tasks = state.monitor.tasks.filter((task) => task.status === "error" || failedTaskIds.has(task.id));
+  const container = document.querySelector("#error-dialog-content");
+  container.textContent = "";
+  if (!tasks.length) container.innerHTML = '<div class="empty-compact">当前没有需要处理的异常</div>';
+  tasks.forEach((task) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.innerHTML = `<strong>${escapeHtml(task.name)}</strong><small>${escapeHtml(task.lastError || "最近有通知发送失败，请查看运行记录")}</small>`;
+    button.addEventListener("click", () => { document.querySelector("#error-dialog").close(); openTask(task.id); });
+    container.append(button);
+  });
+  document.querySelector("#error-dialog").showModal();
 }
 
 function renderSelectedTask() {
@@ -605,7 +721,9 @@ function renderSelectedTask() {
   ].filter(Boolean).join("、") || "未启用";
   const configRows = task.type === "page" ? [
     ["监控类型", "页面指定区域"],
+    ["任务分组", task.group || "页面监控"],
     ["检查频率", frequencyLabel(task.frequencyMinutes)],
+    ...(Number(task.frequencyMinutes) === 1440 ? [["固定检查时间", task.dailyTime || "09:00"]] : []),
     ["暂停抓取", taskQuietHoursLabel(task)],
     ["通知渠道", notifyLabels],
     ["内容来源", task.plan?.page?.sourceType === "network_json" ? "网络响应" : "页面内容区域"],
@@ -615,7 +733,10 @@ function renderSelectedTask() {
     ["资源策略", "单区域采集 · 串行执行"]
   ] : [
     ["监控模式", task.monitorMode === "list_only" ? "仅监控列表变化" : "列表与公告详情"],
+    ["任务分组", task.group || "公告监控"],
     ["检查频率", frequencyLabel(task.frequencyMinutes)],
+    ...(Number(task.frequencyMinutes) === 1440 ? [["固定检查时间", task.dailyTime || "09:00"]] : []),
+    ["每次检查范围", task.maxItems ? `最新 ${task.maxItems} 条公告` : "全部公告（最多 100 条）"],
     ["暂停抓取", taskQuietHoursLabel(task)],
     ["通知渠道", notifyLabels],
     ["列表来源", task.plan?.list?.sourceType === "network_json" ? "网络响应" : "页面内容"],
@@ -667,8 +788,13 @@ function renderSelectedVersion() {
     content.textContent = task?.monitorMode === "list_only" ? "当前任务仅监控公告列表变化，不采集详情正文。可点击“打开原公告”查看。" : "详情正文尚未采集；下一次详情复查会再次尝试获取。";
     return;
   }
-  if (version.html) content.innerHTML = sanitizeRenderedHtml(version.html);
-  else content.textContent = version.content || "没有正文内容";
+  if (version.html) {
+    const safeHtml = sanitizeRenderedHtml(version.html);
+    const renderedText = new DOMParser().parseFromString(safeHtml, "text/html").body.textContent || "";
+    const coverage = version.content ? normalizeText(renderedText).length / Math.max(1, normalizeText(version.content).length) : 1;
+    if (coverage >= 0.55) content.innerHTML = safeHtml;
+    else content.textContent = version.content || "没有正文内容";
+  } else content.textContent = version.content || "没有正文内容";
 }
 
 function sanitizeRenderedHtml(value) {
@@ -698,6 +824,11 @@ function openTaskEditor() {
   if (!task) return;
   document.querySelector("#edit-task-name").value = task.name || "";
   document.querySelector("#edit-task-frequency").value = String(task.frequencyMinutes || 15);
+  document.querySelector("#edit-task-group").value = task.group || "";
+  document.querySelector("#edit-task-daily-time").value = task.dailyTime || "09:00";
+  document.querySelector("#edit-task-max-items").value = String(task.maxItems ?? 20);
+  document.querySelector("#edit-max-items-field").classList.toggle("hidden", task.type === "page");
+  updateEditDailyTimeUi();
   document.querySelector("#edit-quiet-hours-mode").value = task.quietHours?.mode || (task.quietHours?.enabled ? "custom" : "disabled");
   document.querySelector("#edit-quiet-hours-start").value = task.quietHours?.start || "00:00";
   document.querySelector("#edit-quiet-hours-end").value = task.quietHours?.end || "08:00";
@@ -740,6 +871,9 @@ async function saveTaskEdits() {
       name,
       monitorMode: task.monitorMode || "list_and_detail",
       frequencyMinutes: Number(document.querySelector("#edit-task-frequency").value),
+      dailyTime: document.querySelector("#edit-task-daily-time").value,
+      maxItems: Number(document.querySelector("#edit-task-max-items").value || 0),
+      group: document.querySelector("#edit-task-group").value.trim(),
       quietHours: readQuietHours("edit-"),
       enabled: task.enabled,
       listUrl: task.listUrl,
@@ -763,31 +897,38 @@ async function saveTaskFromWizard() {
   const name = document.querySelector("#task-name").value.trim();
   if (!name) return showToast("请填写任务名称。", true);
   const notifications = readNotificationConfig();
+  const editingTask = state.editingPlanTaskId ? state.monitor.tasks.find((task) => task.id === state.editingPlanTaskId) : null;
   const pageMode = state.createTaskType === "page";
   const sampleItem = !pageMode && state.inputs.monitorMode === "list_and_detail" ? findSampleListItem(state.validationItems, state.inputs.detailUrl, state.inputs.detailSample) : null;
-  if (!pageMode && state.inputs.monitorMode === "list_and_detail" && !state.plan.list.extraction.urlField && state.plan.list.sourceType !== "dom" && !state.plan.relation?.detailUrlTemplate) {
+  if (!pageMode && state.inputs.monitorMode === "list_and_detail" && !state.plan.list.extraction.urlField && state.plan.list.sourceType !== "dom" && !state.plan.relation?.detailUrlTemplate && state.plan.relation?.detailInteraction !== "click_item") {
     return showToast("没有识别出列表到详情页的关联规则，暂时无法保存为监控任务。", true);
   }
   const button = document.querySelector("#save-task");
   setBusy(button, true, "正在保存…");
   try {
     const task = await window.announcementProbe.saveTask({
+      id: state.editingPlanTaskId || undefined,
       type: pageMode ? "page" : "announcement",
       name,
       monitorMode: state.inputs.monitorMode,
       frequencyMinutes: Number(document.querySelector("#task-frequency").value),
+      dailyTime: document.querySelector("#task-daily-time").value,
+      maxItems: Number(document.querySelector("#task-max-items").value || 0),
+      group: document.querySelector("#task-group").value.trim(),
       quietHours: readQuietHours(),
-      enabled: true,
+      enabled: editingTask ? editingTask.enabled : true,
       listUrl: state.inputs.listUrl,
       sampleDetailUrl: state.inputs.detailUrl,
       sampleListItem: sampleItem?.raw || null,
+      sourceSamples: { list: state.inputs.listSample, detail: state.inputs.detailSample },
+      resetBaseline: Boolean(state.editingPlanTaskId),
       plan: state.plan,
       regionName: pageMode ? (state.validationDetail?.title || name) : "",
       authentication: { enabled: state.inputs.loginEnabled, sessionKey: state.inputs.authSessionKey },
       notifications
     });
     await refreshMonitorState();
-    showToast("任务已保存，正在静默建立首次基线。");
+    showToast(state.editingPlanTaskId ? "获取方案已更新，下次检查会静默重建基线。" : "任务已保存，正在静默建立首次基线。");
     openTask(task.id);
   } catch (error) {
     showToast(error.message, true);
@@ -837,14 +978,22 @@ function readQuietHours(prefix = "") {
 
 function previewNotification(channel, source = "create") {
   const task = source === "edit" ? selectedTask() : null;
+  const pageMode = task?.type === "page" || (!task && state.createTaskType === "page");
   const taskNameValue = task?.name || document.querySelector("#task-name").value.trim() || "示例公告监控";
   const item = state.validationItems[0] || {};
-  const title = state.validationDetail?.title || item.title || "这是一条示例公告";
+  const title = state.validationDetail?.title || item.title || (pageMode ? "示例页面区域" : "这是一条示例公告");
   const listOnly = state.inputs?.monitorMode === "list_only" || (!state.inputs && document.querySelector('input[name="monitor-mode"]:checked')?.value === "list_only");
-  const summary = listOnly ? "公告列表中出现了一条新公告。" : "这里会显示 DeepSeek 生成的30至50字公告摘要。";
+  const summary = pageMode ? "这里会概括页面区域中发生的事实变化。" : listOnly ? "公告列表中出现了一条新公告。" : "这里会显示 DeepSeek 生成的完整公告摘要。";
   const sourceUrl = item.url || state.inputs?.detailUrl || task?.listUrl || "https://example.com/announcement";
   const container = document.querySelector("#preview-content");
   document.querySelector("#preview-title").textContent = channel === "wechat" ? "企业微信消息预览" : "邮件通知预览";
+  if (pageMode) {
+    container.innerHTML = channel === "wechat"
+      ? `<div class="preview-wechat"><h3>页面内容更新 · ${escapeHtml(taskNameValue)}</h3><p><b>页面：</b>${escapeHtml(title)}</p><p><b>更新摘要：</b>${escapeHtml(summary)}</p><p><a href="#">查看原页面</a></p></div>`
+      : `<div class="preview-email"><div class="preview-email-header"><small>${escapeHtml(taskNameValue)} · 页面内容更新</small><h3>${escapeHtml(title)}</h3><div><b>更新摘要：</b>${escapeHtml(summary)}</div><div><a href="${escapeHtml(sourceUrl)}">查看原页面</a></div></div></div>`;
+    document.querySelector("#notification-preview-dialog").showModal();
+    return;
+  }
   if (channel === "wechat") {
     container.innerHTML = `<div class="preview-stack"><div class="preview-wechat"><h3>新公告 · ${escapeHtml(taskNameValue)}</h3><p><b>公告：</b>${escapeHtml(title)}</p><p><b>摘要：</b>${escapeHtml(summary)}</p><p><a href="#">查看原公告</a></p><small>发现于 ${escapeHtml(formatDateTime(new Date().toISOString()))}</small></div><div class="preview-wechat"><h3>公告内容更新 · ${escapeHtml(taskNameValue)}</h3><p><b>公告：</b>${escapeHtml(title)}</p><p><b>更新摘要：</b>调整了执行时间和接口范围，其他内容保持不变。</p><p><a href="#">查看原公告</a></p><small>纯标点、排版及不影响事实的错别字不会发送</small></div></div>`;
   } else {
@@ -863,7 +1012,7 @@ async function testNotification(channel, source = "create") {
     const notifications = source === "edit" ? readEditNotificationConfig() : readNotificationConfig();
     const profileId = notifications[channel]?.profileId;
     if (!profileId) throw new Error(`请先选择${channel === "wechat" ? "企业微信" : "邮件"}通知配置`);
-    const result = await window.announcementProbe.testNotification({ channel, profileId, taskName: task?.name || document.querySelector("#task-name").value.trim() });
+    const result = await window.announcementProbe.testNotification({ channel, profileId, taskName: task?.name || document.querySelector("#task-name").value.trim(), taskType: task?.type || state.createTaskType });
     showToast(result.status === "sent" ? "测试通知已发送。" : `发送失败：${result.message}`, result.status !== "sent");
   } catch (error) {
     showToast(error.message, true);
@@ -914,6 +1063,10 @@ function populateSettings(settings) {
   document.querySelector("#settings-model").value = settings.deepseekModel || "deepseek-v4-flash";
   document.querySelector("#settings-thinking").value = settings.deepseekThinking || "disabled";
   document.querySelector("#settings-remember-key").checked = Boolean(settings.deepseekApiKey);
+  document.querySelector("#settings-summary-prompt").value = settings.summaryPrompt || "";
+  document.querySelector("#settings-comparison-prompt").value = settings.comparisonPrompt || "";
+  const usage = settings.deepseekUsage || {};
+  document.querySelector("#deepseek-usage").textContent = `累计 ${Number(usage.calls || 0).toLocaleString()} 次调用\n输入 ${Number(usage.promptTokens || 0).toLocaleString()} · 输出 ${Number(usage.completionTokens || 0).toLocaleString()} tokens`;
   document.querySelector("#settings-launch-at-login").checked = Boolean(settings.launchAtLogin);
   document.querySelector("#settings-keep-running").checked = settings.keepRunningInTray !== false;
   document.querySelector("#settings-quiet-hours-enabled").checked = Boolean(settings.defaultQuietHours?.enabled);
@@ -932,6 +1085,18 @@ function populateSettings(settings) {
   document.querySelector("#exception-auth-expired").checked = exceptionAlerts.authenticationExpired !== false;
   document.querySelector("#exception-recovered").checked = exceptionAlerts.recovered !== false;
   renderNotificationProfiles();
+}
+
+function renderStorageUsage(usage = {}) {
+  document.querySelector("#storage-usage").textContent = `合计 ${formatBytes(usage.total)}\n任务与历史 ${formatBytes(usage.data)} · 设置 ${formatBytes(usage.settings)}\n浏览器会话/缓存 ${formatBytes(usage.browser)} · 日志 ${formatBytes(usage.logs)} · 其他 ${formatBytes(usage.other)}`;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 function populateNotificationProfileSelects() {
@@ -1057,6 +1222,8 @@ async function saveApplicationSettings() {
       apiKey,
       model: document.querySelector("#settings-model").value.trim(),
       thinking: document.querySelector("#settings-thinking").value,
+      summaryPrompt: document.querySelector("#settings-summary-prompt").value.trim(),
+      comparisonPrompt: document.querySelector("#settings-comparison-prompt").value.trim(),
       rememberKey: document.querySelector("#settings-remember-key").checked && Boolean(apiKey || state.settings?.deepseekApiKey),
       launchAtLogin: document.querySelector("#settings-launch-at-login").checked,
       keepRunningInTray: document.querySelector("#settings-keep-running").checked,
@@ -1145,7 +1312,7 @@ function handleRuntimeEvent(event) {
     const relatedTaskName = detail.taskName || (detail.taskId ? taskName(detail.taskId) : "");
     appendGlobalLog({ scope: relatedTaskName ? `后台监控 · ${relatedTaskName}` : "后台监控", message: detail.message || runtimeEventLabel(type, detail), level: type === "run-failed" ? "error" : type === "run-completed" ? "success" : "info", elapsedMs: detail.elapsedMs || 0, taskId: detail.taskId || "", taskName: relatedTaskName });
   }
-  if (["run-failed", "run-completed", "run-skipped", "state-changed"].includes(type)) {
+  if (["queue-state", "run-started", "run-failed", "run-completed", "run-skipped", "state-changed"].includes(type)) {
     clearTimeout(handleRuntimeEvent.refreshTimer);
     handleRuntimeEvent.refreshTimer = setTimeout(() => refreshMonitorState().catch(() => {}), 250);
   }
@@ -1275,6 +1442,7 @@ function discoverListCandidates(capture, sampleText) {
         collectionPath: path,
         length: value.length,
         fields,
+        sampleCoverage: overlap,
         sampleRecords: sampleRecords.slice(0, 2).map((item) => compactRecord(item)),
         matchPreview: bestMatchingValues(sampleNormalized, sampleRecords)
       });
@@ -1335,7 +1503,7 @@ function discoverListCandidates(capture, sampleText) {
   });
 
   return dedupeCandidates(candidates)
-    .filter((candidate) => candidate.score >= 0.08)
+    .filter((candidate) => candidate.score >= 0.08 && (candidate.sourceType !== "network_json" || candidate.sampleCoverage >= 0.025))
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
 }
@@ -1494,10 +1662,10 @@ function normalizePagePlan(rawPlan, detailCandidates) {
         updatedAtPath: selectKnownPath(rawPlan?.page?.extraction?.updatedAtPath, selected.fields?.updatedAtPath, knownPaths),
         metadataPaths: normalizeMetadataPaths(rawPlan?.page?.extraction?.metadataPaths, selected.fields?.metadataPaths, knownPaths)
       },
-      confidence: clamp(Number(rawPlan?.page?.confidence ?? selected.score), 0, 1),
+      confidence: normalizeConfidence(rawPlan?.page?.confidence, selected.score),
       reasoning: rawPlan?.page?.reasoning || "选择与复制区域样例匹配度最高的候选。"
     },
-    confidence: clamp(Number(rawPlan?.confidence ?? selected.score), 0, 1),
+    confidence: normalizeConfidence(rawPlan?.confidence, selected.score),
     reasoning: rawPlan?.reasoning || "依据复制样例与候选内容的文字重合度生成。",
     warnings: Array.isArray(rawPlan?.warnings) ? rawPlan.warnings.slice(0, 8) : []
   };
@@ -1530,8 +1698,8 @@ function buildFallbackPagePlan(candidate, warning = "") {
 }
 
 function buildDeepSeekPrompt(inputs, listCandidates, detailCandidates) {
-  const compactListCandidates = listCandidates.slice(0, 2);
-  const compactDetailCandidates = detailCandidates.slice(0, 2);
+  const compactListCandidates = listCandidates.slice(0, 4);
+  const compactDetailCandidates = detailCandidates.slice(0, 4);
   const listOnly = inputs.monitorMode === "list_only";
   const payload = {
     task: listOnly ? "只选择公告主列表候选。本任务仅监控列表新增和日期变化，不采集公告详情。" : "只选择公告主列表和公告详情候选，并判断二者关系。本地程序会依据候选自动生成请求匹配与提取路径，不要重复抄写这些字段。",
@@ -1638,12 +1806,12 @@ function normalizePlan(rawPlan, listCandidates, detailCandidates, monitorMode = 
         sourceType: selectedList.sourceType,
         candidateId: selectedList.id,
         requestMatcher: mergeMatcher(listMatcher, rawPlan?.list?.requestMatcher),
-        confidence: clamp(Number(rawPlan?.list?.confidence ?? selectedList.score), 0, 1),
+        confidence: normalizeConfidence(rawPlan?.list?.confidence, selectedList.score),
         reasoning: rawPlan?.list?.reasoning || fallback.list.reasoning
       },
       detail: null,
       relation: {},
-      confidence: clamp(Number(rawPlan?.confidence ?? selectedList.score), 0, 1),
+      confidence: normalizeConfidence(rawPlan?.confidence, selectedList.score),
       reasoning: rawPlan?.reasoning || "仅监控公告列表中的新增、日期及排列变化。",
       warnings: Array.isArray(rawPlan?.warnings) ? rawPlan.warnings.slice(0, 8) : []
     };
@@ -1670,7 +1838,7 @@ function normalizePlan(rawPlan, listCandidates, detailCandidates, monitorMode = 
         dateField: rawPlan?.list?.extraction?.dateField || selectedList.fields?.dateField || "",
         typeField: rawPlan?.list?.extraction?.typeField || selectedList.fields?.typeField || ""
       },
-      confidence: clamp(Number(rawPlan?.list?.confidence ?? selectedList.score), 0, 1),
+      confidence: normalizeConfidence(rawPlan?.list?.confidence, selectedList.score),
       reasoning: rawPlan?.list?.reasoning || "选择与复制列表样例匹配度最高的候选。"
     },
     detail: {
@@ -1692,14 +1860,18 @@ function normalizePlan(rawPlan, listCandidates, detailCandidates, monitorMode = 
           knownDetailPaths
         )
       },
-      confidence: clamp(Number(rawPlan?.detail?.confidence ?? selectedDetail.score), 0, 1),
+      confidence: normalizeConfidence(rawPlan?.detail?.confidence, selectedDetail.score),
       reasoning: rawPlan?.detail?.reasoning || "选择与复制正文样例匹配度最高的候选。"
     },
     relation: selectedDetail.sourceType === "dom_embedded" ? {
       detailUrlSource: "列表页内嵌正文",
       explanation: `列表项通过 ${embeddedIdTemplate || selectedDetail.domId} 关联同一页面中的公告正文。`
+    } : selectedList.sourceType === "dom_blocks" && selectedList.records?.some((item) => item.interactive) && !selectedList.records?.some((item) => /^https?:/i.test(item.href || "")) ? {
+      detailUrlSource: "点击列表项后在当前页面加载正文",
+      detailInteraction: "click_item",
+      explanation: "按列表项 ID 或标题定位并点击，再从页面区域提取正文。"
     } : rawPlan?.relation || fallback.relation,
-    confidence: clamp(Number(rawPlan?.confidence ?? ((selectedList.score + selectedDetail.score) / 2)), 0, 1),
+    confidence: normalizeConfidence(rawPlan?.confidence, (selectedList.score + selectedDetail.score) / 2),
     reasoning: rawPlan?.reasoning || fallback.reasoning,
     warnings: Array.isArray(rawPlan?.warnings) ? rawPlan.warnings.slice(0, 8) : []
   };
@@ -1756,6 +1928,10 @@ function buildFallbackPlan(listCandidate, detailCandidate, warning = "", monitor
     relation: detailCandidate.sourceType === "dom_embedded" ? {
       detailUrlSource: "列表页内嵌正文",
       explanation: `列表项通过 ${buildEmbeddedDetailIdTemplate(listCandidate, detailCandidate) || detailCandidate.domId} 关联同一页面中的公告正文。`
+    } : listCandidate.sourceType === "dom_blocks" && listCandidate.records?.some((item) => item.interactive) && !listCandidate.records?.some((item) => /^https?:/i.test(item.href || "")) ? {
+      detailUrlSource: "点击列表项后在当前页面加载正文",
+      detailInteraction: "click_item",
+      explanation: "按列表项 ID 或标题定位并点击，再从页面区域提取正文。"
     } : {
       detailUrlSource: "用户提供的详情 URL；后续运行优先使用列表的 URL 字段",
       explanation: "验证阶段使用样例详情 URL，正式监控时由列表记录的 URL 字段打开详情页。"
@@ -1876,6 +2052,13 @@ function extractDetailByPlan(plan, capture, sampleText = "", item = null) {
     };
   }
   return { title: "", content: "", createdAt: "", updatedAt: "", metadata: [], raw: "" };
+}
+
+function applyDetailExclusions(detail, exclusions) {
+  if (!detail || !Array.isArray(exclusions) || !exclusions.length) return detail;
+  let content = String(detail.content || "");
+  exclusions.map((value) => String(value || "").trim()).filter(Boolean).forEach((value) => { content = content.split(value).join(""); });
+  return { ...detail, content: content.replace(/\n{3,}/g, "\n\n").trim(), raw: content };
 }
 
 function prioritizedResponses(responses, matcher) {
@@ -2644,6 +2827,7 @@ function setStatus(message, kind = "") {
   elements.statusCard.classList.remove("working", "success", "error");
   if (kind) elements.statusCard.classList.add(kind);
   elements.statusText.textContent = message;
+  document.querySelector("#copy-diagnostic-logs").classList.toggle("hidden", kind !== "error");
 }
 
 function setValidationBadge(text, kind) {
@@ -2729,6 +2913,19 @@ async function copyRuntimeLogs() {
   showToast("运行日志已复制");
 }
 
+async function copyDiagnosticLogs() {
+  const diagnostic = {
+    generatedAt: new Date().toISOString(),
+    taskType: state.createTaskType,
+    inputs: state.inputs ? { ...state.inputs, authSessionKey: state.inputs.authSessionKey ? "[已隐藏]" : "" } : null,
+    candidates: { list: state.listCandidates, detail: state.detailCandidates },
+    plan: state.plan,
+    logs: state.createLogs
+  };
+  await navigator.clipboard.writeText(JSON.stringify(diagnostic, null, 2));
+  showToast("完整诊断日志已复制");
+}
+
 function appendGlobalLog(entry = {}) {
   const normalized = {
     timestamp: entry.timestamp || new Date().toISOString(),
@@ -2785,6 +2982,15 @@ function escapeHtml(value) {
 
 function percent(value) {
   return `${Math.round(clamp(Number(value || 0), 0, 1) * 100)}%`;
+}
+
+function normalizeConfidence(value, fallback = 0) {
+  if (value == null || value === "") return clamp(Number(fallback || 0), 0, 1);
+  const text = String(value).trim();
+  const parsed = Number(text.replace(/%$/, ""));
+  if (!Number.isFinite(parsed)) return clamp(Number(fallback || 0), 0, 1);
+  const normalized = /%$/.test(text) || parsed > 1 ? parsed / 100 : parsed;
+  return clamp(normalized, 0, 1);
 }
 
 function round(value) {

@@ -4,9 +4,9 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { MonitorStore } = require("../lib/store.cjs");
-const { AnnouncementRuntime, isInQuietHours, nextAllowedRunAt, resolveQuietHours } = require("../lib/runtime.cjs");
-const { buildDetailUrlTemplate, extractDetail, extractList, formatDate, isFormattingOnlyChange } = require("../lib/monitor-core.cjs");
-const { buildEmailHtml, buildEmailText, safeHttpUrl, sanitizeEmailHtml } = require("../lib/notifications.cjs");
+const { AnnouncementRuntime, isInQuietHours, nextAllowedRunAt, nextRunAt, resolveQuietHours } = require("../lib/runtime.cjs");
+const { buildDetailUrlTemplate, extractDetail, extractList, formatDate, isFormattingOnlyChange, resolveDetailUrl } = require("../lib/monitor-core.cjs");
+const { buildEmailHtml, buildEmailText, eventTypeLabel, safeHttpUrl, sanitizeEmailHtml } = require("../lib/notifications.cjs");
 
 test("公告运行时静默建立基线，并只为新增和正文更新生成事件", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "announcement-monitor-test-"));
@@ -121,6 +121,38 @@ test("仅列表模式不采集详情，并通知新增公告和日期变化", as
   await fs.rm(directory, { recursive: true, force: true });
 });
 
+test("方案修改后静默重建基线，并只检查最新 N 条", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "announcement-reset-test-"));
+  const store = new MonitorStore(path.join(directory, "data.json"));
+  await store.initialize();
+  let list = [{ id: 1, title: "公告一" }, { id: 2, title: "公告二" }, { id: 3, title: "公告三" }];
+  const notifications = [];
+  const runtime = new AnnouncementRuntime({
+    store,
+    capture: async (url) => jsonCapture({ data: { items: list, title: "公告", content: "这是足够长的公告正文内容。" } }, url),
+    summarize: async () => ({ summary: "变化摘要", shouldNotify: true }),
+    notify: async (_task, event) => { notifications.push(event); return []; },
+    revealTask: (value) => value,
+    emit: () => {}
+  });
+  const task = testTask();
+  task.monitorMode = "list_only";
+  task.plan.detail = null;
+  task.maxItems = 2;
+  await store.update((data) => data.tasks.push(task));
+  await runtime.runTask(task.id, "test");
+  assert.equal(store.snapshot().tasks[0].lastListSnapshot.length, 2);
+  list = [{ id: 9, title: "新版公告" }, ...list];
+  await store.update((data) => { data.tasks[0].baselineResetPending = true; });
+  await runtime.runTask(task.id, "test");
+  const state = store.snapshot();
+  assert.equal(state.events.length, 0);
+  assert.equal(notifications.length, 0);
+  assert.equal(state.tasks[0].baselineResetPending, false);
+  assert.deepEqual(state.tasks[0].lastListSnapshot.map((item) => item.id), ["9", "1"]);
+  await fs.rm(directory, { recursive: true, force: true });
+});
+
 test("详情地址模板与多种时间戳格式可跨平台复用", () => {
   const template = buildDetailUrlTemplate(
     "https://open.example.com/#/detail?listId=851&itemId=1101514",
@@ -209,6 +241,29 @@ test("任务可继承、覆盖或关闭全局暂停抓取时段", () => {
   assert.deepEqual(resolveQuietHours({ mode: "global" }, globalQuiet), globalQuiet);
   assert.deepEqual(resolveQuietHours({ mode: "custom", start: "23:00", end: "06:00" }, globalQuiet), { enabled: true, start: "23:00", end: "06:00" });
   assert.equal(resolveQuietHours({ mode: "disabled" }, globalQuiet).enabled, false);
+});
+
+test("每天一次可固定检查时间，并为点击型列表解析详情入口", () => {
+  const scheduled = new Date(nextRunAt(1440, null, "09:30"));
+  assert.equal(scheduled.getHours(), 9);
+  assert.equal(scheduled.getMinutes(), 30);
+  const task = testTask();
+  task.plan.relation = { detailInteraction: "click_item" };
+  assert.equal(resolveDetailUrl(task, { id: "129", title: "苏宁公告", url: "" }), task.listUrl);
+});
+
+test("正文排除项会移除固定页脚并保持有效正文", () => {
+  const capture = { finalUrl: "https://example.com/detail", dom: { title: "公告", regions: [{ id: "content", title: "公告标题", text: "这是需要长期保留的完整公告正文内容\n版权所有 2026\n联系我们", html: "<p>这是需要长期保留的完整公告正文内容</p><footer>版权所有 2026<br>联系我们</footer>" }] }, responses: [] };
+  const detail = extractDetail({ sourceType: "dom_region", extraction: { domId: "content" }, exclusions: ["版权所有 2026\n联系我们"] }, capture);
+  assert.match(detail.content, /公告正文内容/);
+  assert.doesNotMatch(detail.content, /版权所有/);
+  assert.doesNotMatch(detail.html, /版权所有/);
+});
+
+test("页面监控通知使用页面文案而不是公告文案", () => {
+  assert.equal(eventTypeLabel("content_updated", { type: "page" }), "页面内容更新");
+  const text = buildEmailText({ name: "状态页", type: "page" }, { type: "content_updated", title: "服务状态", createdAt: new Date().toISOString() }, { content: "当前服务正常" });
+  assert.match(text, /页面内容更新/);
 });
 
 test("首次详情失败会在后续运行补齐基线且不误发更新通知", async () => {
