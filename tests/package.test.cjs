@@ -21,3 +21,8 @@ test("Windows 11 安装目标使用 x64 NSIS 并提供安装选项", () => {
   assert.match(packageJson.scripts?.["dist:win:portable"] || "", /win-portable/);
   assert.match(packageJson.build?.win?.artifactName || "", /portable/);
 });
+
+test("发布构建不会由 electron-builder 隐式上传", () => {
+  const script = require("node:fs").readFileSync(require.resolve("../scripts/build-release.cjs"), "utf8");
+  assert.match(script, /"--publish",\s*"never"/);
+});

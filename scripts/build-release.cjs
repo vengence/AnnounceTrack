@@ -23,6 +23,6 @@ const buildArguments = target === "win"
   ? ["--win", "nsis", "--x64"]
   : target === "win-portable"
     ? ["--win", "zip", "--x64"]
-  : ["--mac", target === "dir" ? "dir" : "dmg", "--arm64"];
-process.argv = [process.argv[0], require.resolve("electron-builder/out/cli/cli.js"), ...buildArguments];
+    : ["--mac", target === "dir" ? "dir" : "dmg", "--arm64"];
+process.argv = [process.argv[0], require.resolve("electron-builder/out/cli/cli.js"), ...buildArguments, "--publish", "never"];
 require(process.argv[1]);
