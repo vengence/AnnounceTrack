@@ -1,5 +1,10 @@
 # AnnounceTrack · 监控助手
 
+> [!WARNING]
+> 本项目代码主要由 OpenAI Codex 辅助生成与迭代，仅供学习和研究。使用前请自行完整审查代码，并在隔离环境中充分测试；请勿未经评估直接用于生产环境或关键业务。使用本项目产生的任何数据丢失、服务异常、安全风险或其他后果均由使用者自行承担，项目作者及贡献者不对此承担责任。
+>
+> This project was primarily generated and iterated with OpenAI Codex and is provided for learning and research only. Review and test the code thoroughly before use. You assume all risks arising from its use; the authors and contributors accept no liability for resulting loss, failure, or security issues.
+
 > 用几个正确样例，配置一个长期安静运行的网站监控任务。
 
 AnnounceTrack 是一个本机运行的跨平台桌面工具，用来监控平台公告和指定网页区域。它会模拟浏览器访问页面，优先从 XHR / Fetch 的结构化响应中提取内容，也能处理静态 HTML；发现新增或更新后，可通过企业微信机器人和邮件通知。
